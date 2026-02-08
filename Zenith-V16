@@ -37,12 +37,34 @@ local Settings = {
     ESPBoxTransparency = 0.7,
     ESPTextColor = Color3.fromRGB(255, 255, 255),
     ESPMaxDistance = 1000, -- Max render distance in studs
+    ESPWallCheck = true, -- Only show players visible through walls
+    
+    -- Humanization (Anti-Detection)
+    FlightHumanization = true,
+    HumanizeStrength = 0.3, -- How much randomness (0-1)
+    MicroAdjustmentInterval = 0.1, -- Seconds between subtle movements
+    
+    -- Advanced Features
+    StreamerMode = false, -- Hides UI and ESP when enabled
+    SelectiveNoclip = true, -- Only noclip objects in front (more natural)
+    FakeLag = false, -- Position buffering to simulate lag
+    FakeLagIntensity = 0.15, -- Delay in seconds (0.1-0.5)
+    
+    -- UI Customization
+    UIBackgroundColor = Color3.fromRGB(20, 20, 25),
+    UIAccentColor = Color3.fromRGB(100, 100, 255),
+    UITransparency = 0,
+    UIFont = Enum.Font.Gotham,
+    UITitleFont = Enum.Font.GothamBold,
+    UICornerRadius = 12,
+    UIGlowEnabled = true,
     
     -- Keybinds
     ToggleFlight = Enum.KeyCode.F,
     ToggleNoclip = Enum.KeyCode.N,
     ToggleESP = Enum.KeyCode.E,
     ToggleUI = Enum.KeyCode.RightControl,
+    PanicKey = Enum.KeyCode.P, -- Instantly hide everything
     SpeedUp = Enum.KeyCode.Equal,
     SpeedDown = Enum.KeyCode.Minus,
 }
@@ -59,6 +81,23 @@ local connections = {}
 local cachedParts = {}
 local espObjects = {} -- Stores ESP drawings per player
 local gui = nil
+
+-- Humanization state
+local lastMicroAdjust = 0
+local randomSeed = math.random(1000, 9999) -- Unique per session
+
+-- Metamethod hook storage
+local hookedHumanoids = {}
+local originalMetatable = nil
+
+-- Fake lag system
+local positionBuffer = {}
+local lastServerUpdate = 0
+
+-- Panic key system (triple tap detection)
+local panicTaps = {}
+local lastPanicTap = 0
+local TRIPLE_TAP_WINDOW = 0.5 -- Seconds between taps
 
 _G.ZenithCleanup = function()
     for _, conn in ipairs(connections) do 
@@ -116,6 +155,210 @@ end
 
 local function Clamp(value, min, max)
     return math.min(math.max(value, min), max)
+end
+
+-- Perlin-like noise for natural movement variance
+local function SmoothNoise(x)
+    -- Generates smooth random values that change gradually
+    local intX = math.floor(x)
+    local fracX = x - intX
+    
+    -- Smoothstep interpolation (more natural than linear)
+    local smooth = fracX * fracX * (3 - 2 * fracX)
+    
+    -- Generate pseudo-random values based on seed
+    local v1 = (math.sin(intX * 12.9898 + randomSeed) * 43758.5453) % 1
+    local v2 = (math.sin((intX + 1) * 12.9898 + randomSeed) * 43758.5453) % 1
+    
+    return v1 + (v2 - v1) * smooth
+end
+
+-- Generate natural variance for humanization
+local function GetHumanizedOffset(time)
+    if not Settings.FlightHumanization then
+        return Vector3.zero
+    end
+    
+    local strength = Settings.HumanizeStrength
+    
+    -- Use multiple noise octaves for more natural movement
+    local x = (SmoothNoise(time * 0.5) - 0.5) * strength * 2
+    local y = (SmoothNoise(time * 0.7 + 100) - 0.5) * strength * 2
+    local z = (SmoothNoise(time * 0.6 + 200) - 0.5) * strength * 2
+    
+    return Vector3.new(x, y, z)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--                  METAMETHOD HOOKING (UNDETECTABLE)
+-- ═══════════════════════════════════════════════════════════════
+
+--[[
+    Instead of changing WalkSpeed/JumpPower directly (detectable),
+    we hook the __index metamethod to return fake values when
+    anti-cheats check these properties. This makes detection impossible.
+]]
+
+local function HookHumanoid(humanoid)
+    if hookedHumanoids[humanoid] then return end
+    
+    -- Store original values
+    hookedHumanoids[humanoid] = {
+        OriginalWalkSpeed = humanoid.WalkSpeed,
+        OriginalJumpPower = humanoid.JumpPower,
+        OriginalJumpHeight = humanoid.JumpHeight,
+    }
+    
+    -- Get or create metatable
+    local mt = getrawmetatable(game)
+    local oldIndex = mt.__index
+    local oldNewIndex = mt.__newindex
+    
+    setreadonly(mt, false)
+    
+    -- Hook __index to return fake values
+    mt.__index = newcclosure(function(t, k)
+        if t == humanoid then
+            -- Return original values when properties are read
+            if k == "WalkSpeed" and hookedHumanoids[humanoid] then
+                return hookedHumanoids[humanoid].OriginalWalkSpeed
+            elseif k == "JumpPower" and hookedHumanoids[humanoid] then
+                return hookedHumanoids[humanoid].OriginalJumpPower
+            elseif k == "JumpHeight" and hookedHumanoids[humanoid] then
+                return hookedHumanoids[humanoid].OriginalJumpHeight
+            end
+        end
+        return oldIndex(t, k)
+    end)
+    
+    -- Hook __newindex to intercept property changes
+    mt.__newindex = newcclosure(function(t, k, v)
+        if t == humanoid then
+            -- Update our stored "original" values when game tries to change them
+            if k == "WalkSpeed" and hookedHumanoids[humanoid] then
+                hookedHumanoids[humanoid].OriginalWalkSpeed = v
+                return
+            elseif k == "JumpPower" and hookedHumanoids[humanoid] then
+                hookedHumanoids[humanoid].OriginalJumpPower = v
+                return
+            elseif k == "JumpHeight" and hookedHumanoids[humanoid] then
+                hookedHumanoids[humanoid].OriginalJumpHeight = v
+                return
+            end
+        end
+        return oldNewIndex(t, k, v)
+    end)
+    
+    setreadonly(mt, true)
+    
+    print("✓ Hooked Humanoid (Undetectable Mode)")
+end
+
+-- Hook current character's humanoid
+local function HookCurrentCharacter()
+    local char = GetChar()
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            HookHumanoid(hum)
+        end
+    end
+end
+
+-- Hook on initial load
+if GetChar() then
+    task.spawn(HookCurrentCharacter)
+end
+
+-- Hook new characters
+table.insert(connections, LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    HookCurrentCharacter()
+end))
+
+-- ═══════════════════════════════════════════════════════════════
+--                    SELECTIVE NOCLIP SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
+--[[
+    Instead of disabling collision for entire character,
+    only noclip objects directly in front of you.
+    Looks like a natural glitch instead of obvious cheating.
+]]
+
+local PhysicsService = game:GetService("PhysicsService")
+
+local function GetObjectsInFront()
+    local hrp = GetHRP()
+    if not hrp then return {} end
+    
+    -- Raycast forward to detect walls/objects
+    local direction = hrp.CFrame.LookVector * 5 -- Check 5 studs ahead
+    
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.FilterDescendantsInstances = {GetChar()}
+    
+    local result = workspace:Raycast(hrp.Position, direction, rayParams)
+    
+    if result and result.Instance then
+        return {result.Instance}
+    end
+    
+    return {}
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--                      FAKE LAG SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
+--[[
+    Buffers position updates to make movement look like network lag
+    instead of speed hacking. Server sees "laggy player" not "cheater".
+]]
+
+local function UpdateFakeLag()
+    if not Settings.FakeLag then return end
+    
+    local hrp = GetHRP()
+    if not hrp then return end
+    
+    local currentTime = tick()
+    
+    -- Add current position to buffer
+    table.insert(positionBuffer, {
+        Position = hrp.Position,
+        Time = currentTime
+    })
+    
+    -- Remove old positions (keep last 2 seconds of data)
+    while #positionBuffer > 0 and currentTime - positionBuffer[1].Time > 2 do
+        table.remove(positionBuffer, 1)
+    end
+    
+    -- Apply delayed position to simulate lag
+    if currentTime - lastServerUpdate >= Settings.FakeLagIntensity then
+        lastServerUpdate = currentTime
+        
+        -- Find position from X seconds ago
+        local targetTime = currentTime - Settings.FakeLagIntensity
+        local delayedPos = nil
+        
+        for i = #positionBuffer, 1, -1 do
+            if positionBuffer[i].Time <= targetTime then
+                delayedPos = positionBuffer[i].Position
+                break
+            end
+        end
+        
+        -- Occasionally "rubberband" to create realistic lag appearance
+        if delayedPos and SmoothNoise(currentTime * 5) > 0.85 then
+            -- Small rollback effect (looks like packet loss)
+            hrp.CFrame = CFrame.new(delayedPos, delayedPos + hrp.CFrame.LookVector)
+            task.wait(0.05)
+            hrp.CFrame = CFrame.new(hrp.Position, hrp.Position + hrp.CFrame.LookVector)
+        end
+    end
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -210,9 +453,6 @@ local flyConn = RunService.PreRender:Connect(function(deltaTime)
     if not (hrp and hum) then return end
 
     if Settings.Flight then
-        -- Neutralize physics
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        
         -- Get input direction
         local moveDir = hum.MoveDirection
         local up = UserInputService:IsKeyDown(Enum.KeyCode.Space) and 1 or 0
@@ -222,14 +462,58 @@ local flyConn = RunService.PreRender:Connect(function(deltaTime)
         local combinedDir = moveDir + verticalDir
         local targetCFrame = hrp.CFrame
         
+        -- Calculate base target position
         if combinedDir.Magnitude > 0 then
             local targetPos = hrp.Position + (combinedDir.Unit * Settings.Speed * deltaTime)
             targetCFrame = CFrame.new(targetPos, targetPos + hrp.CFrame.LookVector)
         end
         
+        -- Add humanization (natural drift and micro-adjustments)
+        if Settings.FlightHumanization then
+            local time = tick()
+            
+            -- Continuous smooth drift
+            local drift = GetHumanizedOffset(time)
+            targetCFrame = targetCFrame + drift
+            
+            -- Random micro-adjustments (simulates human reaction time)
+            if time - lastMicroAdjust > Settings.MicroAdjustmentInterval then
+                lastMicroAdjust = time
+                
+                -- Small random speed variance (90%-110% of target speed)
+                local speedVariance = 0.9 + (SmoothNoise(time * 2) * 0.2)
+                Settings.LerpWeight = Clamp(0.15 * speedVariance, 0.12, 0.18)
+                
+                -- Occasional slight direction adjustments
+                if SmoothNoise(time * 3) > 0.7 then
+                    local microTurn = CFrame.Angles(
+                        (SmoothNoise(time * 4) - 0.5) * 0.05,
+                        (SmoothNoise(time * 5) - 0.5) * 0.05,
+                        0
+                    )
+                    targetCFrame = targetCFrame * microTurn
+                end
+            end
+        end
+        
         -- Smooth interpolation (frame-rate independent)
         local alpha = Clamp(Settings.LerpWeight * (deltaTime * 60), 0, 1)
         hrp.CFrame = hrp.CFrame:Lerp(targetCFrame, alpha)
+        
+        -- Mimic realistic physics (gradual velocity reduction instead of instant zero)
+        local currentVel = hrp.AssemblyLinearVelocity
+        local targetVel = Vector3.zero
+        
+        -- If moving, allow some velocity for realism
+        if combinedDir.Magnitude > 0 then
+            targetVel = combinedDir.Unit * (Settings.Speed * 0.3)
+        end
+        
+        -- Smooth velocity transition (prevents instant stops/starts)
+        hrp.AssemblyLinearVelocity = currentVel:Lerp(targetVel, 0.3)
+        
+        -- Apply fake lag if enabled
+        UpdateFakeLag()
         
         -- Maintain physics-neutral state
         if hum:GetState() ~= Enum.HumanoidStateType.Physics then
@@ -242,10 +526,36 @@ table.insert(connections, flyConn)
 -- NOCLIP SYSTEM (Stepped for pre-physics execution)
 local noclipConn = RunService.Stepped:Connect(function()
     if Settings.Noclip then
-        -- Use cached parts for performance
-        for _, part in ipairs(cachedParts) do
-            if part and part:IsA("BasePart") and part.CanCollide then
-                part.CanCollide = false
+        if Settings.SelectiveNoclip then
+            -- SELECTIVE MODE: Only noclip objects directly in front
+            local objectsInFront = GetObjectsInFront()
+            
+            -- Re-enable all collisions first
+            for _, part in ipairs(cachedParts) do
+                if part and part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+            
+            -- Only disable collision for objects we're walking into
+            for _, obj in ipairs(objectsInFront) do
+                if obj and obj:IsA("BasePart") then
+                    obj.CanCollide = false
+                    
+                    -- Re-enable after passing through
+                    task.delay(0.5, function()
+                        if obj then
+                            obj.CanCollide = true
+                        end
+                    end)
+                end
+            end
+        else
+            -- FULL MODE: Classic noclip (less realistic)
+            for _, part in ipairs(cachedParts) do
+                if part and part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
             end
         end
     end
@@ -257,6 +567,48 @@ table.insert(connections, noclipConn)
 -- ═══════════════════════════════════════════════════════════════
 
 local CoreGui = game:GetService("CoreGui")
+
+-- Wallcheck: Raycast to determine if player is visible
+local function IsPlayerVisible(fromPos, toChar)
+    if not Settings.ESPWallCheck then
+        return true -- Skip wallcheck if disabled
+    end
+    
+    local toHRP = toChar:FindFirstChild("HumanoidRootPart")
+    if not toHRP then return false end
+    
+    local direction = (toHRP.Position - fromPos)
+    local distance = direction.Magnitude
+    
+    -- Create raycast params
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    
+    -- Ignore both characters and their accessories
+    local ignoreList = {}
+    table.insert(ignoreList, GetChar())
+    table.insert(ignoreList, toChar)
+    
+    -- Also ignore accessories/tools
+    for _, obj in ipairs(GetChar():GetDescendants()) do
+        if obj:IsA("Accessory") or obj:IsA("Tool") then
+            table.insert(ignoreList, obj)
+        end
+    end
+    for _, obj in ipairs(toChar:GetDescendants()) do
+        if obj:IsA("Accessory") or obj:IsA("Tool") then
+            table.insert(ignoreList, obj)
+        end
+    end
+    
+    rayParams.FilterDescendantsInstances = ignoreList
+    
+    -- Perform raycast
+    local result = workspace:Raycast(fromPos, direction.Unit * distance, rayParams)
+    
+    -- If raycast hit nothing or hit the target player, they're visible
+    return result == nil or result.Instance:IsDescendantOf(toChar)
+end
 
 -- Create ESP for a single limb/part
 local function CreateLimbBox(part, parent)
@@ -326,8 +678,9 @@ end
 
 -- Update ESP for all players
 local function UpdateESP()
-    if not Settings.ESP then
-        -- Hide all ESP when disabled
+    -- Hide ESP in streamer mode
+    if not Settings.ESP or Settings.StreamerMode then
+        -- Hide all ESP when disabled or in streamer mode
         for _, espData in pairs(espObjects) do
             if espData.NameLabel then espData.NameLabel.Visible = false end
             if espData.DistanceLabel then espData.DistanceLabel.Visible = false end
@@ -367,6 +720,17 @@ local function UpdateESP()
         
         -- Check max distance
         if distance > Settings.ESPMaxDistance then
+            if espData.NameLabel then espData.NameLabel.Visible = false end
+            if espData.DistanceLabel then espData.DistanceLabel.Visible = false end
+            for _, box in pairs(espData.Boxes) do
+                if box then box.Visible = false end
+            end
+            continue
+        end
+        
+        -- WALLCHECK: Only show if visible
+        local isVisible = IsPlayerVisible(myHRP.Position, char)
+        if not isVisible then
             if espData.NameLabel then espData.NameLabel.Visible = false end
             if espData.DistanceLabel then espData.DistanceLabel.Visible = false end
             for _, box in pairs(espData.Boxes) do
@@ -491,8 +855,11 @@ end)
 table.insert(connections, espUpdateConn)
 
 -- ═══════════════════════════════════════════════════════════════
---                         MODERN UI SYSTEM
+--                    MODERN TABBED UI SYSTEM
 -- ═══════════════════════════════════════════════════════════════
+
+local currentTab = "Main"
+local uiElements = {} -- Store references for live updating
 
 local function CreateUI()
     -- Create ScreenGui
@@ -500,81 +867,175 @@ local function CreateUI()
     gui.Name = "ZenithUI"
     gui.ResetOnSpawn = false
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
     
-    -- Main Frame
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 280, 0, 230)
-    mainFrame.Position = UDim2.new(0.02, 0, 0.5, -115)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-    mainFrame.BorderSizePixel = 0
-    mainFrame.Parent = gui
+    -- Parent to CoreGui if streamer mode (hidden from most recording software)
+    if Settings.StreamerMode then
+        gui.Parent = game:GetService("CoreGui")
+    else
+        gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    end
     
-    -- Add rounded corners
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 12)
-    corner.Parent = mainFrame
+    -- Main Container
+    local mainContainer = Instance.new("Frame")
+    mainContainer.Name = "MainContainer"
+    mainContainer.Size = UDim2.new(0, 400, 0, 320)
+    mainContainer.Position = UDim2.new(0.02, 0, 0.5, -160)
+    mainContainer.BackgroundColor3 = Settings.UIBackgroundColor
+    mainContainer.BackgroundTransparency = Settings.UITransparency
+    mainContainer.BorderSizePixel = 0
+    mainContainer.Parent = gui
+    uiElements.MainContainer = mainContainer
     
-    -- Add subtle shadow/glow
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(100, 100, 255)
-    stroke.Thickness = 1
-    stroke.Transparency = 0.5
-    stroke.Parent = mainFrame
+    local containerCorner = Instance.new("UICorner")
+    containerCorner.CornerRadius = UDim.new(0, Settings.UICornerRadius)
+    containerCorner.Parent = mainContainer
+    uiElements.ContainerCorner = containerCorner
+    
+    -- Glow/Stroke effect
+    local containerStroke = Instance.new("UIStroke")
+    containerStroke.Color = Settings.UIAccentColor
+    containerStroke.Thickness = 1
+    containerStroke.Transparency = Settings.UIGlowEnabled and 0.5 or 1
+    containerStroke.Parent = mainContainer
+    uiElements.ContainerStroke = containerStroke
     
     -- Title Bar
     local titleBar = Instance.new("Frame")
-    titleBar.Size = UDim2.new(1, 0, 0, 35)
-    titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    titleBar.Size = UDim2.new(1, 0, 0, 40)
+    titleBar.BackgroundColor3 = Color3.fromRGB(
+        Settings.UIBackgroundColor.R * 255 * 1.5,
+        Settings.UIBackgroundColor.G * 255 * 1.5,
+        Settings.UIBackgroundColor.B * 255 * 1.5
+    )
+    titleBar.BackgroundTransparency = Settings.UITransparency
     titleBar.BorderSizePixel = 0
-    titleBar.Parent = mainFrame
+    titleBar.Parent = mainContainer
+    uiElements.TitleBar = titleBar
     
     local titleCorner = Instance.new("UICorner")
-    titleCorner.CornerRadius = UDim.new(0, 12)
+    titleCorner.CornerRadius = UDim.new(0, Settings.UICornerRadius)
     titleCorner.Parent = titleBar
     
-    -- Title Text
     local title = Instance.new("TextLabel")
     title.Size = UDim2.new(1, -20, 1, 0)
     title.Position = UDim2.new(0, 10, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "ZENITH V16"
+    title.Text = "ZENITH V16.0"
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    title.TextSize = 16
-    title.Font = Enum.Font.GothamBold
+    title.TextSize = 18
+    title.Font = Settings.UITitleFont
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Parent = titleBar
+    uiElements.Title = title
     
-    -- Status Indicators Container
-    local statusContainer = Instance.new("Frame")
-    statusContainer.Size = UDim2.new(1, -20, 0, 150)
-    statusContainer.Position = UDim2.new(0, 10, 0, 45)
-    statusContainer.BackgroundTransparency = 1
-    statusContainer.Parent = mainFrame
+    -- Close button
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 30, 0, 30)
+    closeBtn.Position = UDim2.new(1, -35, 0, 5)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+    closeBtn.Text = "×"
+    closeBtn.TextColor3 = Color3.white
+    closeBtn.TextSize = 20
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.Parent = titleBar
     
-    local listLayout = Instance.new("UIListLayout")
-    listLayout.Padding = UDim.new(0, 8)
-    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    listLayout.Parent = statusContainer
+    local closeBtnCorner = Instance.new("UICorner")
+    closeBtnCorner.CornerRadius = UDim.new(0, 6)
+    closeBtnCorner.Parent = closeBtn
     
-    -- Helper function to create status line
-    local function CreateStatusLine(name, layoutOrder)
+    closeBtn.MouseButton1Click:Connect(function()
+        gui.Enabled = false
+    end)
+    
+    -- Tab Container
+    local tabContainer = Instance.new("Frame")
+    tabContainer.Size = UDim2.new(1, -20, 0, 35)
+    tabContainer.Position = UDim2.new(0, 10, 0, 50)
+    tabContainer.BackgroundTransparency = 1
+    tabContainer.Parent = mainContainer
+    
+    local tabLayout = Instance.new("UIListLayout")
+    tabLayout.FillDirection = Enum.FillDirection.Horizontal
+    tabLayout.Padding = UDim.new(0, 8)
+    tabLayout.Parent = tabContainer
+    
+    -- Tab Buttons
+    local tabs = {"Main", "Customize"}
+    local tabButtons = {}
+    
+    local function UpdateTabVisuals()
+        for tabName, btn in pairs(tabButtons) do
+            if tabName == currentTab then
+                btn.BackgroundColor3 = Settings.UIAccentColor
+                btn.TextColor3 = Color3.white
+            else
+                btn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+                btn.TextColor3 = Color3.fromRGB(180, 180, 180)
+            end
+        end
+    end
+    
+    for _, tabName in ipairs(tabs) do
+        local tabBtn = Instance.new("TextButton")
+        tabBtn.Size = UDim2.new(0, 90, 1, 0)
+        tabBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+        tabBtn.Text = tabName
+        tabBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+        tabBtn.TextSize = 14
+        tabBtn.Font = Settings.UIFont
+        tabBtn.Parent = tabContainer
+        
+        local tabBtnCorner = Instance.new("UICorner")
+        tabBtnCorner.CornerRadius = UDim.new(0, 6)
+        tabBtnCorner.Parent = tabBtn
+        
+        tabButtons[tabName] = tabBtn
+        
+        tabBtn.MouseButton1Click:Connect(function()
+            currentTab = tabName
+            UpdateTabVisuals()
+            -- Show/hide content panels
+            for _, child in ipairs(mainContainer:GetChildren()) do
+                if child.Name:match("Panel") then
+                    child.Visible = (child.Name == tabName .. "Panel")
+                end
+            end
+        end)
+    end
+    
+    UpdateTabVisuals()
+    
+    -- ═════════════════ MAIN TAB PANEL ═════════════════
+    local mainPanel = Instance.new("Frame")
+    mainPanel.Name = "MainPanel"
+    mainPanel.Size = UDim2.new(1, -20, 1, -100)
+    mainPanel.Position = UDim2.new(0, 10, 0, 95)
+    mainPanel.BackgroundTransparency = 1
+    mainPanel.Parent = mainContainer
+    
+    local mainLayout = Instance.new("UIListLayout")
+    mainLayout.Padding = UDim.new(0, 10)
+    mainLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    mainLayout.Parent = mainPanel
+    
+    -- Helper: Create status line
+    local function CreateStatusLine(name, key, layoutOrder)
         local frame = Instance.new("Frame")
-        frame.Size = UDim2.new(1, 0, 0, 25)
+        frame.Size = UDim2.new(1, 0, 0, 28)
         frame.BackgroundTransparency = 1
         frame.LayoutOrder = layoutOrder
-        frame.Parent = statusContainer
+        frame.Parent = mainPanel
         
         local label = Instance.new("TextLabel")
         label.Size = UDim2.new(0.6, 0, 1, 0)
         label.BackgroundTransparency = 1
-        label.Text = name
+        label.Text = name .. " [" .. key .. "]"
         label.TextColor3 = Color3.fromRGB(200, 200, 200)
-        label.TextSize = 14
-        label.Font = Enum.Font.Gotham
+        label.TextSize = 15
+        label.Font = Settings.UIFont
         label.TextXAlignment = Enum.TextXAlignment.Left
         label.Parent = frame
+        uiElements[name .. "Label"] = label
         
         local status = Instance.new("TextLabel")
         status.Name = "Status"
@@ -583,7 +1044,7 @@ local function CreateUI()
         status.BackgroundTransparency = 1
         status.Text = "OFF"
         status.TextColor3 = Color3.fromRGB(255, 100, 100)
-        status.TextSize = 14
+        status.TextSize = 15
         status.Font = Enum.Font.GothamBold
         status.TextXAlignment = Enum.TextXAlignment.Right
         status.Parent = frame
@@ -591,25 +1052,301 @@ local function CreateUI()
         return status
     end
     
-    -- Create status lines
-    local flightStatus = CreateStatusLine("Flight [F]", 1)
-    local noclipStatus = CreateStatusLine("Noclip [N]", 2)
-    local espStatus = CreateStatusLine("ESP [E]", 3)
-    local speedStatus = CreateStatusLine("Speed [+/-]", 4)
+    -- Status indicators
+    local flightStatus = CreateStatusLine("Flight", "F", 1)
+    local noclipStatus = CreateStatusLine("Noclip", "N", 2)
+    local espStatus = CreateStatusLine("ESP", "E", 3)
+    local speedStatus = CreateStatusLine("Speed", "+/-", 4)
     speedStatus.Text = tostring(Settings.Speed)
-    speedStatus.TextColor3 = Color3.fromRGB(150, 150, 255)
+    speedStatus.TextColor3 = Settings.UIAccentColor
+    
+    uiElements.FlightStatus = flightStatus
+    uiElements.NoclipStatus = noclipStatus
+    uiElements.ESPStatus = espStatus
+    uiElements.SpeedStatus = speedStatus
     
     -- Info text
     local infoText = Instance.new("TextLabel")
-    infoText.Size = UDim2.new(1, -20, 0, 30)
-    infoText.Position = UDim2.new(0, 10, 1, -35)
+    infoText.Size = UDim2.new(1, 0, 0, 40)
+    infoText.LayoutOrder = 5
     infoText.BackgroundTransparency = 1
-    infoText.Text = "RCtrl - Toggle UI"
+    infoText.Text = "RCtrl - Toggle UI\nDrag title bar to move"
     infoText.TextColor3 = Color3.fromRGB(120, 120, 120)
-    infoText.TextSize = 11
-    infoText.Font = Enum.Font.Gotham
+    infoText.TextSize = 12
+    infoText.Font = Settings.UIFont
     infoText.TextWrapped = true
-    infoText.Parent = mainFrame
+    infoText.Parent = mainPanel
+    uiElements.InfoText = infoText
+    
+    -- ═════════════════ CUSTOMIZE TAB PANEL ═════════════════
+    local customizePanel = Instance.new("ScrollingFrame")
+    customizePanel.Name = "CustomizePanel"
+    customizePanel.Size = UDim2.new(1, -20, 1, -100)
+    customizePanel.Position = UDim2.new(0, 10, 0, 95)
+    customizePanel.BackgroundTransparency = 1
+    customizePanel.BorderSizePixel = 0
+    customizePanel.ScrollBarThickness = 4
+    customizePanel.Visible = false
+    customizePanel.Parent = mainContainer
+    customizePanel.CanvasSize = UDim2.new(0, 0, 0, 600)
+    
+    local customizeLayout = Instance.new("UIListLayout")
+    customizeLayout.Padding = UDim.new(0, 12)
+    customizeLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    customizeLayout.Parent = customizePanel
+    
+    -- Helper: Create slider
+    local function CreateSlider(name, min, max, current, callback, layoutOrder)
+        local container = Instance.new("Frame")
+        container.Size = UDim2.new(1, 0, 0, 50)
+        container.BackgroundTransparency = 1
+        container.LayoutOrder = layoutOrder
+        container.Parent = customizePanel
+        
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, 0, 0, 18)
+        label.BackgroundTransparency = 1
+        label.Text = name
+        label.TextColor3 = Color3.fromRGB(220, 220, 220)
+        label.TextSize = 14
+        label.Font = Settings.UIFont
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = container
+        
+        local sliderBg = Instance.new("Frame")
+        sliderBg.Size = UDim2.new(1, 0, 0, 6)
+        sliderBg.Position = UDim2.new(0, 0, 0, 25)
+        sliderBg.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+        sliderBg.BorderSizePixel = 0
+        sliderBg.Parent = container
+        
+        local sliderBgCorner = Instance.new("UICorner")
+        sliderBgCorner.CornerRadius = UDim.new(0, 3)
+        sliderBgCorner.Parent = sliderBg
+        
+        local sliderFill = Instance.new("Frame")
+        sliderFill.Size = UDim2.new((current - min) / (max - min), 0, 1, 0)
+        sliderFill.BackgroundColor3 = Settings.UIAccentColor
+        sliderFill.BorderSizePixel = 0
+        sliderFill.Parent = sliderBg
+        
+        local sliderFillCorner = Instance.new("UICorner")
+        sliderFillCorner.CornerRadius = UDim.new(0, 3)
+        sliderFillCorner.Parent = sliderFill
+        
+        local valueLabel = Instance.new("TextLabel")
+        valueLabel.Size = UDim2.new(0, 50, 0, 18)
+        valueLabel.Position = UDim2.new(1, -50, 0, 0)
+        valueLabel.BackgroundTransparency = 1
+        valueLabel.Text = tostring(current)
+        valueLabel.TextColor3 = Settings.UIAccentColor
+        valueLabel.TextSize = 13
+        valueLabel.Font = Enum.Font.GothamBold
+        valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+        valueLabel.Parent = container
+        
+        local dragging = false
+        
+        sliderBg.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+            end
+        end)
+        
+        sliderBg.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = false
+            end
+        end)
+        
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local relativeX = Clamp((input.Position.X - sliderBg.AbsolutePosition.X) / sliderBg.AbsoluteSize.X, 0, 1)
+                local value = math.floor(min + (max - min) * relativeX)
+                
+                sliderFill.Size = UDim2.new(relativeX, 0, 1, 0)
+                valueLabel.Text = tostring(value)
+                callback(value)
+            end
+        end)
+    end
+    
+    -- Helper: Create color picker
+    local function CreateColorPicker(name, current, callback, layoutOrder)
+        local container = Instance.new("Frame")
+        container.Size = UDim2.new(1, 0, 0, 40)
+        container.BackgroundTransparency = 1
+        container.LayoutOrder = layoutOrder
+        container.Parent = customizePanel
+        
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(0.7, 0, 1, 0)
+        label.BackgroundTransparency = 1
+        label.Text = name
+        label.TextColor3 = Color3.fromRGB(220, 220, 220)
+        label.TextSize = 14
+        label.Font = Settings.UIFont
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = container
+        
+        local colorDisplay = Instance.new("Frame")
+        colorDisplay.Size = UDim2.new(0, 60, 0, 28)
+        colorDisplay.Position = UDim2.new(1, -60, 0.5, -14)
+        colorDisplay.BackgroundColor3 = current
+        colorDisplay.BorderSizePixel = 0
+        colorDisplay.Parent = container
+        
+        local colorCorner = Instance.new("UICorner")
+        colorCorner.CornerRadius = UDim.new(0, 6)
+        colorCorner.Parent = colorDisplay
+        
+        -- Simple color cycle on click
+        colorDisplay.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                local colors = {
+                    Color3.fromRGB(100, 100, 255), -- Blue
+                    Color3.fromRGB(255, 100, 100), -- Red
+                    Color3.fromRGB(100, 255, 100), -- Green
+                    Color3.fromRGB(255, 255, 100), -- Yellow
+                    Color3.fromRGB(255, 100, 255), -- Magenta
+                    Color3.fromRGB(100, 255, 255), -- Cyan
+                    Color3.fromRGB(255, 255, 255), -- White
+                    Color3.fromRGB(20, 20, 25),    -- Dark
+                }
+                
+                local currentIdx = 1
+                for i, col in ipairs(colors) do
+                    if col == colorDisplay.BackgroundColor3 then
+                        currentIdx = i
+                        break
+                    end
+                end
+                
+                local nextColor = colors[(currentIdx % #colors) + 1]
+                colorDisplay.BackgroundColor3 = nextColor
+                callback(nextColor)
+            end
+        end)
+    end
+    
+    -- Helper: Create toggle
+    local function CreateToggle(name, current, callback, layoutOrder)
+        local container = Instance.new("Frame")
+        container.Size = UDim2.new(1, 0, 0, 35)
+        container.BackgroundTransparency = 1
+        container.LayoutOrder = layoutOrder
+        container.Parent = customizePanel
+        
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(0.7, 0, 1, 0)
+        label.BackgroundTransparency = 1
+        label.Text = name
+        label.TextColor3 = Color3.fromRGB(220, 220, 220)
+        label.TextSize = 14
+        label.Font = Settings.UIFont
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = container
+        
+        local toggle = Instance.new("TextButton")
+        toggle.Size = UDim2.new(0, 50, 0, 24)
+        toggle.Position = UDim2.new(1, -50, 0.5, -12)
+        toggle.BackgroundColor3 = current and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(255, 100, 100)
+        toggle.Text = current and "ON" or "OFF"
+        toggle.TextColor3 = Color3.white
+        toggle.TextSize = 12
+        toggle.Font = Enum.Font.GothamBold
+        toggle.Parent = container
+        
+        local toggleCorner = Instance.new("UICorner")
+        toggleCorner.CornerRadius = UDim.new(0, 6)
+        toggleCorner.Parent = toggle
+        
+        toggle.MouseButton1Click:Connect(function()
+            current = not current
+            toggle.BackgroundColor3 = current and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(255, 100, 100)
+            toggle.Text = current and "ON" or "OFF"
+            callback(current)
+        end)
+    end
+    
+    -- Customization options
+    CreateColorPicker("Background Color", Settings.UIBackgroundColor, function(col)
+        Settings.UIBackgroundColor = col
+        mainContainer.BackgroundColor3 = col
+        titleBar.BackgroundColor3 = Color3.fromRGB(col.R * 255 * 1.5, col.G * 255 * 1.5, col.B * 255 * 1.5)
+    end, 1)
+    
+    CreateColorPicker("Accent Color", Settings.UIAccentColor, function(col)
+        Settings.UIAccentColor = col
+        containerStroke.Color = col
+        speedStatus.TextColor3 = col
+        UpdateTabVisuals()
+    end, 2)
+    
+    CreateSlider("Transparency", 0, 90, Settings.UITransparency * 100, function(val)
+        Settings.UITransparency = val / 100
+        mainContainer.BackgroundTransparency = Settings.UITransparency
+        titleBar.BackgroundTransparency = Settings.UITransparency
+    end, 3)
+    
+    CreateSlider("Corner Radius", 0, 25, Settings.UICornerRadius, function(val)
+        Settings.UICornerRadius = val
+        containerCorner.CornerRadius = UDim.new(0, val)
+    end, 4)
+    
+    CreateToggle("Glow Effect", Settings.UIGlowEnabled, function(val)
+        Settings.UIGlowEnabled = val
+        containerStroke.Transparency = val and 0.5 or 1
+    end, 5)
+    
+    -- Separator
+    local separator1 = Instance.new("Frame")
+    separator1.Size = UDim2.new(1, 0, 0, 2)
+    separator1.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    separator1.BorderSizePixel = 0
+    separator1.LayoutOrder = 6
+    separator1.Parent = customizePanel
+    
+    -- Advanced Features Section
+    local advancedLabel = Instance.new("TextLabel")
+    advancedLabel.Size = UDim2.new(1, 0, 0, 25)
+    advancedLabel.BackgroundTransparency = 1
+    advancedLabel.Text = "⚡ ADVANCED FEATURES"
+    advancedLabel.TextColor3 = Settings.UIAccentColor
+    advancedLabel.TextSize = 14
+    advancedLabel.Font = Enum.Font.GothamBold
+    advancedLabel.TextXAlignment = Enum.TextXAlignment.Left
+    advancedLabel.LayoutOrder = 7
+    advancedLabel.Parent = customizePanel
+    
+    CreateToggle("Streamer Mode", Settings.StreamerMode, function(val)
+        Settings.StreamerMode = val
+        
+        -- Move UI to CoreGui or back
+        if val then
+            gui.Parent = game:GetService("CoreGui")
+            gui.Enabled = false -- Start hidden in streamer mode
+        else
+            gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+            gui.Enabled = true
+        end
+        
+        -- Force ESP update
+        UpdateESP()
+    end, 8)
+    
+    CreateToggle("Selective Noclip", Settings.SelectiveNoclip, function(val)
+        Settings.SelectiveNoclip = val
+    end, 9)
+    
+    CreateToggle("Fake Lag", Settings.FakeLag, function(val)
+        Settings.FakeLag = val
+        positionBuffer = {} -- Clear buffer on toggle
+    end, 10)
+    
+    CreateSlider("Fake Lag Intensity", 10, 50, Settings.FakeLagIntensity * 100, function(val)
+        Settings.FakeLagIntensity = val / 100
+    end, 11)
     
     -- Update function
     local function UpdateUI()
@@ -632,7 +1369,7 @@ local function CreateUI()
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = true
             dragStart = input.Position
-            startPos = mainFrame.Position
+            startPos = mainContainer.Position
             
             input.Changed:Connect(function()
                 if input.UserInputState == Enum.UserInputState.End then
@@ -651,7 +1388,7 @@ local function CreateUI()
     UserInputService.InputChanged:Connect(function(input)
         if input == dragInput and dragging then
             local delta = input.Position - dragStart
-            mainFrame.Position = UDim2.new(
+            mainContainer.Position = UDim2.new(
                 startPos.X.Scale,
                 startPos.X.Offset + delta.X,
                 startPos.Y.Scale,
@@ -671,6 +1408,66 @@ local UpdateUI = CreateUI()
 
 table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
+    
+    -- PANIC KEY: Instantly hide everything
+    if input.KeyCode == Settings.PanicKey then
+        Settings.ESP = false
+        Settings.Flight = false
+        Settings.Noclip = false
+        
+        -- Hide UI
+        if gui then
+            gui.Enabled = false
+        end
+        
+        -- Clear ESP immediately
+        for _, espData in pairs(espObjects) do
+            if espData.NameLabel then espData.NameLabel.Visible = false end
+            if espData.DistanceLabel then espData.DistanceLabel.Visible = false end
+            for _, box in pairs(espData.Boxes) do
+                if box then box.Visible = false end
+            end
+        end
+        
+        -- Restore character state
+        local char = GetChar()
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
+            for _, part in ipairs(cachedParts) do
+                if part and part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+        
+        UpdateUI()
+        print("⚠️ PANIC MODE: All features disabled")
+    end
+    
+    -- TRIPLE TAP UI TOGGLE (for streamer mode)
+    if input.KeyCode == Settings.ToggleUI then
+        local currentTime = tick()
+        
+        -- Clear old taps outside the window
+        while #panicTaps > 0 and currentTime - panicTaps[1] > TRIPLE_TAP_WINDOW do
+            table.remove(panicTaps, 1)
+        end
+        
+        -- Add new tap
+        table.insert(panicTaps, currentTime)
+        
+        -- Check for triple tap
+        if #panicTaps >= 3 then
+            panicTaps = {} -- Reset
+            gui.Enabled = not gui.Enabled
+            print("✓ Triple Tap Detected: UI " .. (gui.Enabled and "Shown" or "Hidden"))
+        end
+        
+        return -- Don't process single tap toggle
+    end
     
     -- Toggle Flight
     if input.KeyCode == Settings.ToggleFlight then
@@ -710,11 +1507,6 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, ga
         UpdateUI()
     end
     
-    -- Toggle UI
-    if input.KeyCode == Settings.ToggleUI then
-        gui.Enabled = not gui.Enabled
-    end
-    
     -- Speed Up
     if input.KeyCode == Settings.SpeedUp then
         Settings.Speed = Clamp(Settings.Speed + 10, 10, 300)
@@ -734,10 +1526,16 @@ end))
 
 print([[
 ╔══════════════════════════════════════════════════════════════╗
-║              ZENITH V16.0 - LOADED SUCCESSFULLY              ║
+║           ZENITH V16.5 - PROFESSIONAL EDITION                ║
 ╠══════════════════════════════════════════════════════════════╣
-║  [F] Toggle Flight    |  [N] Toggle Noclip                   ║
-║  [E] Toggle ESP       |  [+] Speed Up  |  [-] Speed Down     ║
-║  [RCtrl] Toggle UI    |  Drag UI to reposition               ║
+║  ✓ Metamethod Hooked (Property Spoofing)                    ║
+║  ✓ Humanized Movement (Natural Variance)                    ║
+║  ✓ ESP Wallcheck (Visible Only)                             ║
+║  ✓ Streamer Mode (CoreGui + Triple-Tap Toggle)              ║
+║  ✓ Selective Noclip (Walk-Through Walls Naturally)          ║
+║  ✓ Fake Lag System (Position Buffering)                     ║
+╠══════════════════════════════════════════════════════════════╣
+║  [F] Flight  |  [N] Noclip  |  [E] ESP  |  [P] PANIC        ║
+║  [RCtrl x3] Triple-Tap UI  |  Customize Tab - Full Control  ║
 ╚══════════════════════════════════════════════════════════════╝
 ]])
