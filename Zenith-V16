@@ -1,0 +1,743 @@
+--[[
+    ╔══════════════════════════════════════════════════════════════╗
+    ║              ZENITH V16.0 (ULTIMATE EDITION)                 ║
+    ║  Enhanced Stealth • Optimized Performance • Modern UI        ║
+    ╚══════════════════════════════════════════════════════════════╝
+    
+    Features:
+    ✓ Delta-Time Normalized Flight with Smooth Lerp
+    ✓ Optimized Noclip (Cached Parts System)
+    ✓ Advanced Staff Detection (Startup + Runtime)
+    ✓ Modern Toggle UI with Keybinds
+    ✓ Memory Leak Prevention
+    ✓ Anti-Detection Measures
+    ✓ Connection Cleanup System
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+
+-- ═══════════════════════════════════════════════════════════════
+--                         CONFIGURATION
+-- ═══════════════════════════════════════════════════════════════
+
+local Settings = {
+    Speed = 60,
+    Flight = false, -- Start disabled for stealth
+    Noclip = false,
+    StaffCheck = true,
+    LerpWeight = 0.15,
+    ESP = false, -- Start disabled for stealth
+    
+    -- ESP Settings
+    ESPBoxColor = Color3.fromRGB(255, 255, 255),
+    ESPBoxTransparency = 0.7,
+    ESPTextColor = Color3.fromRGB(255, 255, 255),
+    ESPMaxDistance = 1000, -- Max render distance in studs
+    
+    -- Keybinds
+    ToggleFlight = Enum.KeyCode.F,
+    ToggleNoclip = Enum.KeyCode.N,
+    ToggleESP = Enum.KeyCode.E,
+    ToggleUI = Enum.KeyCode.RightControl,
+    SpeedUp = Enum.KeyCode.Equal,
+    SpeedDown = Enum.KeyCode.Minus,
+}
+
+-- ═══════════════════════════════════════════════════════════════
+--                      CLEANUP PREVIOUS SESSIONS
+-- ═══════════════════════════════════════════════════════════════
+
+if _G.ZenithCleanup then 
+    _G.ZenithCleanup() 
+end
+
+local connections = {}
+local cachedParts = {}
+local espObjects = {} -- Stores ESP drawings per player
+local gui = nil
+
+_G.ZenithCleanup = function()
+    for _, conn in ipairs(connections) do 
+        if conn and conn.Connected then
+            conn:Disconnect() 
+        end
+    end
+    connections = {}
+    cachedParts = {}
+    
+    -- Cleanup ESP objects
+    for _, espData in pairs(espObjects) do
+        if espData.Folder then
+            espData.Folder:Destroy()
+        end
+    end
+    espObjects = {}
+    
+    -- Reset character state
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then 
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp) 
+        end
+        -- Re-enable collisions
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+    end
+    
+    -- Destroy UI
+    if gui then
+        gui:Destroy()
+        gui = nil
+    end
+    
+    print("✓ Zenith V16: Cleanup Complete")
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--                           UTILITIES
+-- ═══════════════════════════════════════════════════════════════
+
+local function GetChar() 
+    return LocalPlayer.Character 
+end
+
+local function GetHRP() 
+    local char = GetChar()
+    return char and char:FindFirstChild("HumanoidRootPart") 
+end
+
+local function Clamp(value, min, max)
+    return math.min(math.max(value, min), max)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--                        STAFF DETECTION
+-- ═══════════════════════════════════════════════════════════════
+
+local function IsStaff(player)
+    local success, result = pcall(function()
+        if game.CreatorType == Enum.CreatorType.Group then
+            return player:GetRankInGroup(game.CreatorId) > 1
+        else
+            return player.UserId == game.CreatorId
+        end
+    end)
+    return success and result
+end
+
+local function EmergencyShutdown(staffName)
+    Settings.Flight = false
+    Settings.Noclip = false
+    warn("⚠️ STAFF DETECTED: " .. staffName .. " | Emergency Shutdown Active")
+    
+    -- Restore character immediately
+    local char = GetChar()
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+-- Check existing players on startup
+if Settings.StaffCheck then
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and IsStaff(player) then
+            EmergencyShutdown(player.Name)
+            break
+        end
+    end
+end
+
+-- Monitor new players joining
+table.insert(connections, Players.PlayerAdded:Connect(function(player)
+    if Settings.StaffCheck and IsStaff(player) then
+        EmergencyShutdown(player.Name)
+    end
+end))
+
+-- ═══════════════════════════════════════════════════════════════
+--                     OPTIMIZED NOCLIP SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
+local function CacheCharacterParts()
+    cachedParts = {}
+    local char = GetChar()
+    if not char then return end
+    
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            table.insert(cachedParts, part)
+        end
+    end
+end
+
+-- Recache when character changes
+table.insert(connections, LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5) -- Wait for character to fully load
+    CacheCharacterParts()
+end))
+
+-- Initial cache
+if GetChar() then
+    CacheCharacterParts()
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--                      FLIGHT & NOCLIP CORE
+-- ═══════════════════════════════════════════════════════════════
+
+-- FLIGHT SYSTEM (PreRender for smooth 60+ FPS)
+local flyConn = RunService.PreRender:Connect(function(deltaTime)
+    local hrp = GetHRP()
+    local char = GetChar()
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    
+    if not (hrp and hum) then return end
+
+    if Settings.Flight then
+        -- Neutralize physics
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        
+        -- Get input direction
+        local moveDir = hum.MoveDirection
+        local up = UserInputService:IsKeyDown(Enum.KeyCode.Space) and 1 or 0
+        local down = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and -1 or 0
+        local verticalDir = Vector3.new(0, up + down, 0)
+        
+        local combinedDir = moveDir + verticalDir
+        local targetCFrame = hrp.CFrame
+        
+        if combinedDir.Magnitude > 0 then
+            local targetPos = hrp.Position + (combinedDir.Unit * Settings.Speed * deltaTime)
+            targetCFrame = CFrame.new(targetPos, targetPos + hrp.CFrame.LookVector)
+        end
+        
+        -- Smooth interpolation (frame-rate independent)
+        local alpha = Clamp(Settings.LerpWeight * (deltaTime * 60), 0, 1)
+        hrp.CFrame = hrp.CFrame:Lerp(targetCFrame, alpha)
+        
+        -- Maintain physics-neutral state
+        if hum:GetState() ~= Enum.HumanoidStateType.Physics then
+            hum:ChangeState(Enum.HumanoidStateType.Physics)
+        end
+    end
+end)
+table.insert(connections, flyConn)
+
+-- NOCLIP SYSTEM (Stepped for pre-physics execution)
+local noclipConn = RunService.Stepped:Connect(function()
+    if Settings.Noclip then
+        -- Use cached parts for performance
+        for _, part in ipairs(cachedParts) do
+            if part and part:IsA("BasePart") and part.CanCollide then
+                part.CanCollide = false
+            end
+        end
+    end
+end)
+table.insert(connections, noclipConn)
+
+-- ═══════════════════════════════════════════════════════════════
+--                    STEALTHY ESP SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
+local CoreGui = game:GetService("CoreGui")
+
+-- Create ESP for a single limb/part
+local function CreateLimbBox(part, parent)
+    local box = Drawing.new("Square")
+    box.Visible = false
+    box.Color = Settings.ESPBoxColor
+    box.Thickness = 1
+    box.Transparency = Settings.ESPBoxTransparency
+    box.Filled = false
+    
+    return box
+end
+
+-- Create full ESP for a player
+local function CreateESP(player)
+    if player == LocalPlayer then return end
+    if espObjects[player] then return end
+    
+    local espData = {
+        Boxes = {},
+        NameLabel = nil,
+        DistanceLabel = nil,
+    }
+    
+    -- Create name label (Drawing API for performance)
+    local nameLabel = Drawing.new("Text")
+    nameLabel.Visible = false
+    nameLabel.Color = Settings.ESPTextColor
+    nameLabel.Size = 16
+    nameLabel.Center = true
+    nameLabel.Outline = true
+    nameLabel.Font = 2
+    nameLabel.Text = player.Name
+    espData.NameLabel = nameLabel
+    
+    -- Create distance label
+    local distLabel = Drawing.new("Text")
+    distLabel.Visible = false
+    distLabel.Color = Settings.ESPTextColor
+    distLabel.Size = 14
+    distLabel.Center = true
+    distLabel.Outline = true
+    distLabel.Font = 2
+    espData.DistanceLabel = distLabel
+    
+    espObjects[player] = espData
+end
+
+-- Remove ESP for a player
+local function RemoveESP(player)
+    local espData = espObjects[player]
+    if not espData then return end
+    
+    -- Cleanup boxes
+    for _, box in pairs(espData.Boxes) do
+        if box then
+            box:Remove()
+        end
+    end
+    
+    -- Cleanup labels
+    if espData.NameLabel then espData.NameLabel:Remove() end
+    if espData.DistanceLabel then espData.DistanceLabel:Remove() end
+    
+    espObjects[player] = nil
+end
+
+-- Update ESP for all players
+local function UpdateESP()
+    if not Settings.ESP then
+        -- Hide all ESP when disabled
+        for _, espData in pairs(espObjects) do
+            if espData.NameLabel then espData.NameLabel.Visible = false end
+            if espData.DistanceLabel then espData.DistanceLabel.Visible = false end
+            for _, box in pairs(espData.Boxes) do
+                if box then box.Visible = false end
+            end
+        end
+        return
+    end
+    
+    local camera = workspace.CurrentCamera
+    local myChar = GetChar()
+    local myHRP = GetHRP()
+    if not (camera and myHRP) then return end
+    
+    for player, espData in pairs(espObjects) do
+        if not player or not player.Parent then
+            RemoveESP(player)
+            continue
+        end
+        
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        
+        if not (char and hrp) then
+            -- Hide if no character
+            if espData.NameLabel then espData.NameLabel.Visible = false end
+            if espData.DistanceLabel then espData.DistanceLabel.Visible = false end
+            for _, box in pairs(espData.Boxes) do
+                if box then box.Visible = false end
+            end
+            continue
+        end
+        
+        -- Calculate distance
+        local distance = (myHRP.Position - hrp.Position).Magnitude
+        
+        -- Check max distance
+        if distance > Settings.ESPMaxDistance then
+            if espData.NameLabel then espData.NameLabel.Visible = false end
+            if espData.DistanceLabel then espData.DistanceLabel.Visible = false end
+            for _, box in pairs(espData.Boxes) do
+                if box then box.Visible = false end
+            end
+            continue
+        end
+        
+        -- Get head position for labels
+        local head = char:FindFirstChild("Head")
+        if head then
+            local headPos, onScreen = camera:WorldToViewportPoint(head.Position + Vector3.new(0, 1.5, 0))
+            
+            if onScreen then
+                -- Update name label
+                espData.NameLabel.Position = Vector2.new(headPos.X, headPos.Y)
+                espData.NameLabel.Visible = true
+                
+                -- Update distance label
+                espData.DistanceLabel.Position = Vector2.new(headPos.X, headPos.Y + 18)
+                espData.DistanceLabel.Text = string.format("[%d studs]", math.floor(distance))
+                espData.DistanceLabel.Visible = true
+            else
+                espData.NameLabel.Visible = false
+                espData.DistanceLabel.Visible = false
+            end
+        end
+        
+        -- Draw boxes on limbs
+        local limbs = {"Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg",
+                       "UpperTorso", "LowerTorso", "LeftUpperArm", "LeftLowerArm", "LeftHand",
+                       "RightUpperArm", "RightLowerArm", "RightHand", "LeftUpperLeg", 
+                       "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot"}
+        
+        local boxIndex = 1
+        for _, limbName in ipairs(limbs) do
+            local limb = char:FindFirstChild(limbName)
+            
+            if limb and limb:IsA("BasePart") then
+                -- Create box if doesn't exist
+                if not espData.Boxes[boxIndex] then
+                    espData.Boxes[boxIndex] = CreateLimbBox(limb)
+                end
+                
+                local box = espData.Boxes[boxIndex]
+                
+                -- Calculate 2D bounding box from 3D part
+                local cf = limb.CFrame
+                local size = limb.Size
+                
+                -- Get 8 corners of the part
+                local corners = {
+                    cf * CFrame.new(-size.X/2, -size.Y/2, -size.Z/2),
+                    cf * CFrame.new(size.X/2, -size.Y/2, -size.Z/2),
+                    cf * CFrame.new(-size.X/2, size.Y/2, -size.Z/2),
+                    cf * CFrame.new(size.X/2, size.Y/2, -size.Z/2),
+                    cf * CFrame.new(-size.X/2, -size.Y/2, size.Z/2),
+                    cf * CFrame.new(size.X/2, -size.Y/2, size.Z/2),
+                    cf * CFrame.new(-size.X/2, size.Y/2, size.Z/2),
+                    cf * CFrame.new(size.X/2, size.Y/2, size.Z/2),
+                }
+                
+                -- Project to screen space and find min/max
+                local minX, minY = math.huge, math.huge
+                local maxX, maxY = -math.huge, -math.huge
+                local anyOnScreen = false
+                
+                for _, corner in ipairs(corners) do
+                    local screenPos, onScreen = camera:WorldToViewportPoint(corner.Position)
+                    if onScreen then
+                        anyOnScreen = true
+                        minX = math.min(minX, screenPos.X)
+                        minY = math.min(minY, screenPos.Y)
+                        maxX = math.max(maxX, screenPos.X)
+                        maxY = math.max(maxY, screenPos.Y)
+                    end
+                end
+                
+                -- Update box if on screen
+                if anyOnScreen and minX ~= math.huge then
+                    box.Position = Vector2.new(minX, minY)
+                    box.Size = Vector2.new(maxX - minX, maxY - minY)
+                    box.Visible = true
+                else
+                    box.Visible = false
+                end
+                
+                boxIndex = boxIndex + 1
+            end
+        end
+        
+        -- Hide unused boxes
+        for i = boxIndex, #espData.Boxes do
+            if espData.Boxes[i] then
+                espData.Boxes[i].Visible = false
+            end
+        end
+    end
+end
+
+-- Initialize ESP for existing players
+for _, player in ipairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        CreateESP(player)
+    end
+end
+
+-- Handle new players
+table.insert(connections, Players.PlayerAdded:Connect(function(player)
+    CreateESP(player)
+end))
+
+-- Handle players leaving
+table.insert(connections, Players.PlayerRemoving:Connect(function(player)
+    RemoveESP(player)
+end))
+
+-- Update ESP every frame (RenderStepped for smooth visuals)
+local espUpdateConn = RunService.RenderStepped:Connect(function()
+    UpdateESP()
+end)
+table.insert(connections, espUpdateConn)
+
+-- ═══════════════════════════════════════════════════════════════
+--                         MODERN UI SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
+local function CreateUI()
+    -- Create ScreenGui
+    gui = Instance.new("ScreenGui")
+    gui.Name = "ZenithUI"
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    
+    -- Main Frame
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 280, 0, 230)
+    mainFrame.Position = UDim2.new(0.02, 0, 0.5, -115)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Parent = gui
+    
+    -- Add rounded corners
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = mainFrame
+    
+    -- Add subtle shadow/glow
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(100, 100, 255)
+    stroke.Thickness = 1
+    stroke.Transparency = 0.5
+    stroke.Parent = mainFrame
+    
+    -- Title Bar
+    local titleBar = Instance.new("Frame")
+    titleBar.Size = UDim2.new(1, 0, 0, 35)
+    titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = mainFrame
+    
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 12)
+    titleCorner.Parent = titleBar
+    
+    -- Title Text
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 1, 0)
+    title.Position = UDim2.new(0, 10, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "ZENITH V16"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 16
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = titleBar
+    
+    -- Status Indicators Container
+    local statusContainer = Instance.new("Frame")
+    statusContainer.Size = UDim2.new(1, -20, 0, 150)
+    statusContainer.Position = UDim2.new(0, 10, 0, 45)
+    statusContainer.BackgroundTransparency = 1
+    statusContainer.Parent = mainFrame
+    
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.Padding = UDim.new(0, 8)
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Parent = statusContainer
+    
+    -- Helper function to create status line
+    local function CreateStatusLine(name, layoutOrder)
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(1, 0, 0, 25)
+        frame.BackgroundTransparency = 1
+        frame.LayoutOrder = layoutOrder
+        frame.Parent = statusContainer
+        
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(0.6, 0, 1, 0)
+        label.BackgroundTransparency = 1
+        label.Text = name
+        label.TextColor3 = Color3.fromRGB(200, 200, 200)
+        label.TextSize = 14
+        label.Font = Enum.Font.Gotham
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = frame
+        
+        local status = Instance.new("TextLabel")
+        status.Name = "Status"
+        status.Size = UDim2.new(0.4, 0, 1, 0)
+        status.Position = UDim2.new(0.6, 0, 0, 0)
+        status.BackgroundTransparency = 1
+        status.Text = "OFF"
+        status.TextColor3 = Color3.fromRGB(255, 100, 100)
+        status.TextSize = 14
+        status.Font = Enum.Font.GothamBold
+        status.TextXAlignment = Enum.TextXAlignment.Right
+        status.Parent = frame
+        
+        return status
+    end
+    
+    -- Create status lines
+    local flightStatus = CreateStatusLine("Flight [F]", 1)
+    local noclipStatus = CreateStatusLine("Noclip [N]", 2)
+    local espStatus = CreateStatusLine("ESP [E]", 3)
+    local speedStatus = CreateStatusLine("Speed [+/-]", 4)
+    speedStatus.Text = tostring(Settings.Speed)
+    speedStatus.TextColor3 = Color3.fromRGB(150, 150, 255)
+    
+    -- Info text
+    local infoText = Instance.new("TextLabel")
+    infoText.Size = UDim2.new(1, -20, 0, 30)
+    infoText.Position = UDim2.new(0, 10, 1, -35)
+    infoText.BackgroundTransparency = 1
+    infoText.Text = "RCtrl - Toggle UI"
+    infoText.TextColor3 = Color3.fromRGB(120, 120, 120)
+    infoText.TextSize = 11
+    infoText.Font = Enum.Font.Gotham
+    infoText.TextWrapped = true
+    infoText.Parent = mainFrame
+    
+    -- Update function
+    local function UpdateUI()
+        flightStatus.Text = Settings.Flight and "ON" or "OFF"
+        flightStatus.TextColor3 = Settings.Flight and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(255, 100, 100)
+        
+        noclipStatus.Text = Settings.Noclip and "ON" or "OFF"
+        noclipStatus.TextColor3 = Settings.Noclip and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(255, 100, 100)
+        
+        espStatus.Text = Settings.ESP and "ON" or "OFF"
+        espStatus.TextColor3 = Settings.ESP and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(255, 100, 100)
+        
+        speedStatus.Text = tostring(Settings.Speed)
+    end
+    
+    -- Make draggable
+    local dragging, dragInput, dragStart, startPos
+    
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = mainFrame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    
+    titleBar.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            dragInput = input
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            mainFrame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    
+    return UpdateUI
+end
+
+local UpdateUI = CreateUI()
+
+-- ═══════════════════════════════════════════════════════════════
+--                         KEYBIND SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    -- Toggle Flight
+    if input.KeyCode == Settings.ToggleFlight then
+        Settings.Flight = not Settings.Flight
+        UpdateUI()
+        
+        -- Restore gravity if disabled
+        if not Settings.Flight then
+            local char = GetChar()
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                end
+            end
+        end
+    end
+    
+    -- Toggle Noclip
+    if input.KeyCode == Settings.ToggleNoclip then
+        Settings.Noclip = not Settings.Noclip
+        UpdateUI()
+        
+        -- Restore collisions if disabled
+        if not Settings.Noclip then
+            for _, part in ipairs(cachedParts) do
+                if part and part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+    
+    -- Toggle ESP
+    if input.KeyCode == Settings.ToggleESP then
+        Settings.ESP = not Settings.ESP
+        UpdateUI()
+    end
+    
+    -- Toggle UI
+    if input.KeyCode == Settings.ToggleUI then
+        gui.Enabled = not gui.Enabled
+    end
+    
+    -- Speed Up
+    if input.KeyCode == Settings.SpeedUp then
+        Settings.Speed = Clamp(Settings.Speed + 10, 10, 300)
+        UpdateUI()
+    end
+    
+    -- Speed Down
+    if input.KeyCode == Settings.SpeedDown then
+        Settings.Speed = Clamp(Settings.Speed - 10, 10, 300)
+        UpdateUI()
+    end
+end))
+
+-- ═══════════════════════════════════════════════════════════════
+--                         INITIALIZATION
+-- ═══════════════════════════════════════════════════════════════
+
+print([[
+╔══════════════════════════════════════════════════════════════╗
+║              ZENITH V16.0 - LOADED SUCCESSFULLY              ║
+╠══════════════════════════════════════════════════════════════╣
+║  [F] Toggle Flight    |  [N] Toggle Noclip                   ║
+║  [E] Toggle ESP       |  [+] Speed Up  |  [-] Speed Down     ║
+║  [RCtrl] Toggle UI    |  Drag UI to reposition               ║
+╚══════════════════════════════════════════════════════════════╝
+]])
