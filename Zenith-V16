@@ -88,6 +88,7 @@ local Settings = {
     UITitleFont = Enum.Font.GothamBold,
     UICornerRadius = 12,
     UIGlowEnabled = true,
+    UIMinimized = true, -- Start minimized (mobile-friendly)
     
     -- Keybinds
     ToggleFlight = Enum.KeyCode.F,
@@ -230,6 +231,18 @@ end
 local function Clamp(value, min, max)
     return math.min(math.max(value, min), max)
 end
+
+-- Detect if user is on mobile
+local function IsMobile()
+    local touchEnabled = UserInputService.TouchEnabled
+    local keyboardEnabled = UserInputService.KeyboardEnabled
+    local gamepadEnabled = UserInputService.GamepadEnabled
+    
+    -- Mobile if touch is enabled but keyboard/gamepad are not
+    return touchEnabled and not keyboardEnabled and not gamepadEnabled
+end
+
+local isMobileDevice = IsMobile()
 
 -- Perlin-like noise for natural movement variance
 local function SmoothNoise(x)
@@ -1995,14 +2008,68 @@ local function CreateUI()
         gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
     end
     
-    -- Main Container
+    -- ═══════════════ TOGGLE BUTTON (Mobile & PC) ═══════════════
+    local toggleButton = Instance.new("ImageButton")
+    toggleButton.Name = "ZenithToggle"
+    toggleButton.Size = UDim2.new(0, 60, 0, 60)
+    toggleButton.Position = UDim2.new(1, -70, 1, -70) -- Bottom-right corner
+    toggleButton.AnchorPoint = Vector2.new(0, 0)
+    toggleButton.BackgroundColor3 = Settings.UIAccentColor
+    toggleButton.BorderSizePixel = 0
+    toggleButton.Image = "" -- No image, using text icon
+    toggleButton.Parent = gui
+    
+    -- Make it circular
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(1, 0) -- Full circle
+    toggleCorner.Parent = toggleButton
+    
+    -- Add glow effect
+    local toggleStroke = Instance.new("UIStroke")
+    toggleStroke.Color = Color3.fromRGB(255, 255, 255)
+    toggleStroke.Thickness = 2
+    toggleStroke.Transparency = 0.5
+    toggleStroke.Parent = toggleButton
+    
+    -- Icon text (Z for Zenith)
+    local toggleIcon = Instance.new("TextLabel")
+    toggleIcon.Size = UDim2.new(1, 0, 1, 0)
+    toggleIcon.BackgroundTransparency = 1
+    toggleIcon.Text = "Z"
+    toggleIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
+    toggleIcon.TextSize = 32
+    toggleIcon.Font = Enum.Font.GothamBold
+    toggleIcon.Parent = toggleButton
+    
+    -- Pulse animation for toggle button
+    local function PulseButton()
+        local tween = TweenService:Create(toggleButton, TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+            Size = UDim2.new(0, 65, 0, 65)
+        })
+        tween:Play()
+    end
+    
+    if isMobileDevice then
+        PulseButton() -- Pulse on mobile to draw attention
+    end
+    
+    -- Main Container (starts hidden if minimized)
     local mainContainer = Instance.new("Frame")
     mainContainer.Name = "MainContainer"
-    mainContainer.Size = UDim2.new(0, 400, 0, 320)
-    mainContainer.Position = UDim2.new(0.02, 0, 0.5, -160)
+    
+    -- Position based on device
+    if isMobileDevice then
+        mainContainer.Size = UDim2.new(0, 340, 0, 500) -- Smaller for mobile
+        mainContainer.Position = UDim2.new(0.5, -170, 0.5, -250)
+    else
+        mainContainer.Size = UDim2.new(0, 400, 0, 320)
+        mainContainer.Position = UDim2.new(0.02, 0, 0.5, -160)
+    end
+    
     mainContainer.BackgroundColor3 = Settings.UIBackgroundColor
     mainContainer.BackgroundTransparency = Settings.UITransparency
     mainContainer.BorderSizePixel = 0
+    mainContainer.Visible = not Settings.UIMinimized -- Start hidden if minimized
     mainContainer.Parent = gui
     uiElements.MainContainer = mainContainer
     
@@ -2037,16 +2104,31 @@ local function CreateUI()
     titleCorner.Parent = titleBar
     
     local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -20, 1, 0)
+    title.Size = UDim2.new(1, -80, 1, 0)
     title.Position = UDim2.new(0, 10, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "ZENITH V16.0"
+    title.Text = "ZENITH V17"
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
     title.TextSize = 18
     title.Font = Settings.UITitleFont
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Parent = titleBar
     uiElements.Title = title
+    
+    -- Minimize button
+    local minimizeBtn = Instance.new("TextButton")
+    minimizeBtn.Size = UDim2.new(0, 30, 0, 30)
+    minimizeBtn.Position = UDim2.new(1, -70, 0, 5)
+    minimizeBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 255)
+    minimizeBtn.Text = "−"
+    minimizeBtn.TextColor3 = Color3.white
+    minimizeBtn.TextSize = 20
+    minimizeBtn.Font = Enum.Font.GothamBold
+    minimizeBtn.Parent = titleBar
+    
+    local minimizeBtnCorner = Instance.new("UICorner")
+    minimizeBtnCorner.CornerRadius = UDim.new(0, 6)
+    minimizeBtnCorner.Parent = minimizeBtn
     
     -- Close button
     local closeBtn = Instance.new("TextButton")
@@ -2062,6 +2144,49 @@ local function CreateUI()
     local closeBtnCorner = Instance.new("UICorner")
     closeBtnCorner.CornerRadius = UDim.new(0, 6)
     closeBtnCorner.Parent = closeBtn
+    
+    -- Toggle button click handler
+    toggleButton.MouseButton1Click:Connect(function()
+        Settings.UIMinimized = not Settings.UIMinimized
+        mainContainer.Visible = not Settings.UIMinimized
+        
+        -- Animate toggle button
+        local targetSize = Settings.UIMinimized and UDim2.new(0, 60, 0, 60) or UDim2.new(0, 50, 0, 50)
+        TweenService:Create(toggleButton, TweenInfo.new(0.3, Enum.EasingStyle.Back), {
+            Size = targetSize,
+            Rotation = Settings.UIMinimized and 0 or 90
+        }):Play()
+        
+        -- Animate main container
+        if not Settings.UIMinimized then
+            mainContainer.Size = UDim2.new(0, 0, 0, 0)
+            mainContainer.Visible = true
+            
+            local targetSize = isMobileDevice and UDim2.new(0, 340, 0, 500) or UDim2.new(0, 400, 0, 320)
+            TweenService:Create(mainContainer, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                Size = targetSize
+            }):Play()
+        else
+            TweenService:Create(mainContainer, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
+                Size = UDim2.new(0, 0, 0, 0)
+            }):Play()
+            
+            task.wait(0.2)
+            mainContainer.Visible = false
+        end
+    end)
+    
+    -- Minimize button handler
+    minimizeBtn.MouseButton1Click:Connect(function()
+        Settings.UIMinimized = true
+        mainContainer.Visible = false
+        
+        -- Animate toggle button back
+        TweenService:Create(toggleButton, TweenInfo.new(0.3, Enum.EasingStyle.Back), {
+            Size = UDim2.new(0, 60, 0, 60),
+            Rotation = 0
+        }):Play()
+    end)
     
     closeBtn.MouseButton1Click:Connect(function()
         gui.Enabled = false
@@ -3024,11 +3149,21 @@ local function CreateUI()
         speedStatus.Text = tostring(Settings.Speed)
     end
     
-    -- Make draggable
+    -- Make draggable (works on both PC and mobile)
     local dragging, dragInput, dragStart, startPos
     
+    local function UpdateDrag(input)
+        local delta = input.Position - dragStart
+        mainContainer.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+    
     titleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             dragStart = input.Position
             startPos = mainContainer.Position
@@ -3042,20 +3177,14 @@ local function CreateUI()
     end)
     
     titleBar.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement then
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
             dragInput = input
         end
     end)
     
     UserInputService.InputChanged:Connect(function(input)
         if input == dragInput and dragging then
-            local delta = input.Position - dragStart
-            mainContainer.Position = UDim2.new(
-                startPos.X.Scale,
-                startPos.X.Offset + delta.X,
-                startPos.Y.Scale,
-                startPos.Y.Offset + delta.Y
-            )
+            UpdateDrag(input)
         end
     end)
     
@@ -3188,12 +3317,18 @@ end))
 
 print([[
 ╔══════════════════════════════════════════════════════════════╗
-║         ZENITH V17.0 - UNIVERSAL HUB EDITION                 ║
+║         ZENITH V17 - MOBILE & PC UNIVERSAL HUB               ║
+╠══════════════════════════════════════════════════════════════╣
+║  📱 MOBILE SUPPORT:                                          ║
+║  ✓ Bottom-Right Toggle Button (Tap "Z" to open)             ║
+║  ✓ Touch-Friendly UI with Smooth Animations                 ║
+║  ✓ Optimized Layout for Small Screens                       ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  CORE FEATURES:                                              ║
 ║  ✓ Metamethod Hooked Property Spoofing                      ║
 ║  ✓ Humanized Flight with Natural Variance                   ║
 ║  ✓ ESP with Wallcheck & Visibility Modes                    ║
+║  ✓ Custom Chat (Visible to Everyone - Bypasses Filter)      ║
 ║  ✓ Selective Noclip (Walk-Through Only)                     ║
 ║  ✓ Fake Lag System (Position Buffering)                     ║
 ║  ✓ Streamer Mode (CoreGui + Triple-Tap)                     ║
@@ -3201,11 +3336,15 @@ print([[
 ║  ADVANCED TOOLS:                                             ║
 ║  ✓ Smart Auto-Walk (PathfindingService)                     ║
 ║  ✓ Ghost Mode (Desync Scouting)                             ║
-║  ✓ Remote Event Logger (Selective)                          ║
+║  ✓ Remote Event Logger (Selective)                              
 ║  ✓ Chat Logger & Bypasser                                   ║
-║  ✓ Inventory Scanner (Check Player Items)                   ║
+║  ✓ Inventory Scanner (Check Player Items)                    ║
 ╠══════════════════════════════════════════════════════════════╣
-║  [F] Flight  [N] Noclip  [E] ESP  [P] PANIC                 ║
-║  [RCtrl x3] Triple-Tap UI  •  4 Tabs: Full Control          ║
+║  MOBILE: Tap circular "Z" button (bottom-right corner)       ║
+║  PC: [F] Flight [N] Noclip [E] ESP [P] PANIC [/] Chat        ║
+║  [RCtrl x3] Triple-Tap  •  4 Tabs: Main/Tools/Custom/Logs    ║
 ╚══════════════════════════════════════════════════════════════╝
+
+🎮 Device Detected: ]] .. (isMobileDevice and "MOBILE 📱" or "PC 🖥️") .. [[
+
 ]])
