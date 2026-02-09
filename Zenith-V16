@@ -1216,16 +1216,16 @@ local function CreateCustomChatBox()
                 inputContainer.Visible = true
                 chatInputBox:CaptureFocus()
                 chatInputBox.Text = ""
+                print("✓ Custom Chat Opened")
             end
         end
     end)
     
     print("✓ Custom Chat System Initialized")
+    print("✓ Chat GUI Created:", customChatGui.Name, "| Parent:", customChatGui.Parent.Name)
+    print("✓ Chat Input Box:", chatInputBox and "Ready" or "Failed")
 end
 
--- Initialize custom chat
-if Settings.ChatBoxEnabled then
-    task.spawn(CreateCustomChatBox)
 end
 
 local function StopAutoWalk()
@@ -2009,14 +2009,16 @@ local function CreateUI()
     end
     
     -- ═══════════════ TOGGLE BUTTON (Mobile & PC) ═══════════════
-    local toggleButton = Instance.new("ImageButton")
+    local toggleButton = Instance.new("TextButton")
     toggleButton.Name = "ZenithToggle"
     toggleButton.Size = UDim2.new(0, 60, 0, 60)
     toggleButton.Position = UDim2.new(1, -70, 1, -70) -- Bottom-right corner
     toggleButton.AnchorPoint = Vector2.new(0, 0)
     toggleButton.BackgroundColor3 = Settings.UIAccentColor
     toggleButton.BorderSizePixel = 0
-    toggleButton.Image = "" -- No image, using text icon
+    toggleButton.Text = ""
+    toggleButton.ZIndex = 10
+    toggleButton.Active = true
     toggleButton.Parent = gui
     
     -- Make it circular
@@ -2029,6 +2031,7 @@ local function CreateUI()
     toggleStroke.Color = Color3.fromRGB(255, 255, 255)
     toggleStroke.Thickness = 2
     toggleStroke.Transparency = 0.5
+    toggleStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     toggleStroke.Parent = toggleButton
     
     -- Icon text (Z for Zenith)
@@ -2039,6 +2042,7 @@ local function CreateUI()
     toggleIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
     toggleIcon.TextSize = 32
     toggleIcon.Font = Enum.Font.GothamBold
+    toggleIcon.ZIndex = 11
     toggleIcon.Parent = toggleButton
     
     -- Pulse animation for toggle button
@@ -2052,6 +2056,9 @@ local function CreateUI()
     if isMobileDevice then
         PulseButton() -- Pulse on mobile to draw attention
     end
+    
+    print("✓ Toggle Button Created:", toggleButton.Name, "at position", toggleButton.Position)
+    print("✓ Toggle Button Visible:", toggleButton.Visible, "| Parent:", toggleButton.Parent.Name)
     
     -- Main Container (starts hidden if minimized)
     local mainContainer = Instance.new("Frame")
@@ -2145,7 +2152,7 @@ local function CreateUI()
     closeBtnCorner.CornerRadius = UDim.new(0, 6)
     closeBtnCorner.Parent = closeBtn
     
-    -- Toggle button click handler
+    -- Toggle button click handler (works on mobile and PC)
     toggleButton.MouseButton1Click:Connect(function()
         Settings.UIMinimized = not Settings.UIMinimized
         mainContainer.Visible = not Settings.UIMinimized
@@ -2175,6 +2182,36 @@ local function CreateUI()
             mainContainer.Visible = false
         end
     end)
+    
+    -- Mobile touch support (in case MouseButton1Click doesn't fire)
+    if isMobileDevice then
+        toggleButton.TouchTap:Connect(function()
+            Settings.UIMinimized = not Settings.UIMinimized
+            mainContainer.Visible = not Settings.UIMinimized
+            
+            local targetSize = Settings.UIMinimized and UDim2.new(0, 60, 0, 60) or UDim2.new(0, 50, 0, 50)
+            TweenService:Create(toggleButton, TweenInfo.new(0.3, Enum.EasingStyle.Back), {
+                Size = targetSize,
+                Rotation = Settings.UIMinimized and 0 or 90
+            }):Play()
+            
+            if not Settings.UIMinimized then
+                mainContainer.Size = UDim2.new(0, 0, 0, 0)
+                mainContainer.Visible = true
+                
+                TweenService:Create(mainContainer, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                    Size = UDim2.new(0, 340, 0, 500)
+                }):Play()
+            else
+                TweenService:Create(mainContainer, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
+                    Size = UDim2.new(0, 0, 0, 0)
+                }):Play()
+                
+                task.wait(0.2)
+                mainContainer.Visible = false
+            end
+        end)
+    end
     
     -- Minimize button handler
     minimizeBtn.MouseButton1Click:Connect(function()
@@ -3193,6 +3230,14 @@ end
 
 local UpdateUI = CreateUI()
 
+-- Initialize custom chat after main UI (ensures proper rendering)
+task.spawn(function()
+    task.wait(0.3) -- Small delay to ensure GUI is fully loaded
+    if Settings.ChatBoxEnabled or Settings.CustomChat then
+        CreateCustomChatBox()
+    end
+end)
+
 -- ═══════════════════════════════════════════════════════════════
 --                         KEYBIND SYSTEM
 -- ═══════════════════════════════════════════════════════════════
@@ -3336,13 +3381,13 @@ print([[
 ║  ADVANCED TOOLS:                                             ║
 ║  ✓ Smart Auto-Walk (PathfindingService)                     ║
 ║  ✓ Ghost Mode (Desync Scouting)                             ║
-║  ✓ Remote Event Logger (Selective)                              
+║  ✓ Remote Event Logger (Selective)                          ║
 ║  ✓ Chat Logger & Bypasser                                   ║
-║  ✓ Inventory Scanner (Check Player Items)                    ║
+║  ✓ Inventory Scanner (Check Player Items)                   ║
 ╠══════════════════════════════════════════════════════════════╣
-║  MOBILE: Tap circular "Z" button (bottom-right corner)       ║
-║  PC: [F] Flight [N] Noclip [E] ESP [P] PANIC [/] Chat        ║
-║  [RCtrl x3] Triple-Tap  •  4 Tabs: Main/Tools/Custom/Logs    ║
+║  MOBILE: Tap circular "Z" button (bottom-right corner)      ║
+║  PC: [F] Flight [N] Noclip [E] ESP [P] PANIC [/] Chat       ║
+║  [RCtrl x3] Triple-Tap  •  4 Tabs: Main/Tools/Custom/Logs   ║
 ╚══════════════════════════════════════════════════════════════╝
 
 🎮 Device Detected: ]] .. (isMobileDevice and "MOBILE 📱" or "PC 🖥️") .. [[
