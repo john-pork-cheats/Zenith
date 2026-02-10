@@ -2008,57 +2008,97 @@ local function CreateUI()
         gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
     end
     
-    -- ═══════════════ TOGGLE BUTTON (Mobile & PC) ═══════════════
-    local toggleButton = Instance.new("TextButton")
-    toggleButton.Name = "ZenithToggle"
-    toggleButton.Size = UDim2.new(0, 60, 0, 60)
-    toggleButton.Position = UDim2.new(1, -70, 1, -70) -- Bottom-right corner
-    toggleButton.AnchorPoint = Vector2.new(0, 0)
-    toggleButton.BackgroundColor3 = Settings.UIAccentColor
-    toggleButton.BorderSizePixel = 0
-    toggleButton.Text = ""
-    toggleButton.ZIndex = 10
-    toggleButton.Active = true
-    toggleButton.Parent = gui
+    -- ═══════════════ TOGGLE TAB (Mobile & PC) ═══════════════
+    -- Horizontal rectangular tab instead of circular button
+    local toggleTab = Instance.new("TextButton")
+    toggleTab.Name = "ZenithToggleTab"
+    toggleTab.Size = UDim2.new(0, 120, 0, 45) -- Horizontal rectangle
+    toggleTab.Position = UDim2.new(1, -130, 1, -55) -- Bottom-right corner
+    toggleTab.AnchorPoint = Vector2.new(0, 0)
+    toggleTab.BackgroundColor3 = Settings.UIAccentColor
+    toggleTab.BorderSizePixel = 0
+    toggleTab.Text = ""
+    toggleTab.ZIndex = 100 -- Very high to ensure visibility
+    toggleTab.Active = true
+    toggleTab.AutoButtonColor = false
+    toggleTab.Parent = gui
     
-    -- Make it circular
+    -- Rounded corners
     local toggleCorner = Instance.new("UICorner")
-    toggleCorner.CornerRadius = UDim.new(1, 0) -- Full circle
-    toggleCorner.Parent = toggleButton
+    toggleCorner.CornerRadius = UDim.new(0, 10)
+    toggleCorner.Parent = toggleTab
     
-    -- Add glow effect
+    -- Gradient for depth
+    local toggleGradient = Instance.new("UIGradient")
+    toggleGradient.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 120, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 80, 200))
+    }
+    toggleGradient.Rotation = 90
+    toggleGradient.Parent = toggleTab
+    
+    -- Glow effect
     local toggleStroke = Instance.new("UIStroke")
     toggleStroke.Color = Color3.fromRGB(255, 255, 255)
     toggleStroke.Thickness = 2
-    toggleStroke.Transparency = 0.5
+    toggleStroke.Transparency = 0.3
     toggleStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    toggleStroke.Parent = toggleButton
+    toggleStroke.Parent = toggleTab
     
-    -- Icon text (Z for Zenith)
+    -- Icon and text container
+    local toggleContent = Instance.new("Frame")
+    toggleContent.Size = UDim2.new(1, 0, 1, 0)
+    toggleContent.BackgroundTransparency = 1
+    toggleContent.ZIndex = 101
+    toggleContent.Parent = toggleTab
+    
+    -- Logo/Icon (Z)
     local toggleIcon = Instance.new("TextLabel")
-    toggleIcon.Size = UDim2.new(1, 0, 1, 0)
+    toggleIcon.Size = UDim2.new(0, 35, 1, 0)
+    toggleIcon.Position = UDim2.new(0, 5, 0, 0)
     toggleIcon.BackgroundTransparency = 1
     toggleIcon.Text = "Z"
     toggleIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
-    toggleIcon.TextSize = 32
+    toggleIcon.TextSize = 24
     toggleIcon.Font = Enum.Font.GothamBold
-    toggleIcon.ZIndex = 11
-    toggleIcon.Parent = toggleButton
+    toggleIcon.ZIndex = 102
+    toggleIcon.Parent = toggleContent
     
-    -- Pulse animation for toggle button
-    local function PulseButton()
-        local tween = TweenService:Create(toggleButton, TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
-            Size = UDim2.new(0, 65, 0, 65)
+    -- Label text
+    local toggleLabel = Instance.new("TextLabel")
+    toggleLabel.Size = UDim2.new(1, -45, 1, 0)
+    toggleLabel.Position = UDim2.new(0, 40, 0, 0)
+    toggleLabel.BackgroundTransparency = 1
+    toggleLabel.Text = "ZENITH"
+    toggleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    toggleLabel.TextSize = 16
+    toggleLabel.Font = Enum.Font.GothamBold
+    toggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    toggleLabel.ZIndex = 102
+    toggleLabel.Parent = toggleContent
+    
+    -- Pulse animation for visibility
+    local function PulseTab()
+        local tween = TweenService:Create(toggleTab, TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+            Size = UDim2.new(0, 125, 0, 47),
+            BackgroundColor3 = Color3.fromRGB(130, 130, 255)
         })
         tween:Play()
+        
+        -- Glow pulse
+        TweenService:Create(toggleStroke, TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+            Transparency = 0
+        }):Play()
     end
     
-    if isMobileDevice then
-        PulseButton() -- Pulse on mobile to draw attention
-    end
+    -- Always pulse on first load for visibility
+    PulseTab()
     
-    print("✓ Toggle Button Created:", toggleButton.Name, "at position", toggleButton.Position)
-    print("✓ Toggle Button Visible:", toggleButton.Visible, "| Parent:", toggleButton.Parent.Name)
+    print("✓ Toggle Tab Created at bottom-right")
+    print("✓ Tab Size:", toggleTab.Size)
+    print("✓ Tab Position:", toggleTab.Position)
+    print("✓ Tab Visible:", toggleTab.Visible)
+    print("✓ Tab ZIndex:", toggleTab.ZIndex)
     
     -- Main Container (starts hidden if minimized)
     local mainContainer = Instance.new("Frame")
@@ -2152,62 +2192,88 @@ local function CreateUI()
     closeBtnCorner.CornerRadius = UDim.new(0, 6)
     closeBtnCorner.Parent = closeBtn
     
-    -- Toggle button click handler (works on mobile and PC)
-    toggleButton.MouseButton1Click:Connect(function()
-        Settings.UIMinimized = not Settings.UIMinimized
-        mainContainer.Visible = not Settings.UIMinimized
+    -- Toggle tab click handler with slide animation
+    local isExpanded = false
+    
+    toggleTab.MouseButton1Click:Connect(function()
+        isExpanded = not isExpanded
+        Settings.UIMinimized = not isExpanded
         
-        -- Animate toggle button
-        local targetSize = Settings.UIMinimized and UDim2.new(0, 60, 0, 60) or UDim2.new(0, 50, 0, 50)
-        TweenService:Create(toggleButton, TweenInfo.new(0.3, Enum.EasingStyle.Back), {
-            Size = targetSize,
-            Rotation = Settings.UIMinimized and 0 or 90
-        }):Play()
-        
-        -- Animate main container
-        if not Settings.UIMinimized then
-            mainContainer.Size = UDim2.new(0, 0, 0, 0)
+        if isExpanded then
+            -- Slide tab to the left and show menu
+            TweenService:Create(toggleTab, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                Position = UDim2.new(1, -140, 1, -55),
+                BackgroundColor3 = Color3.fromRGB(80, 200, 80) -- Green when open
+            }):Play()
+            
+            toggleLabel.Text = "OPEN"
+            
+            -- Show main container with slide from right
+            mainContainer.Position = UDim2.new(1.5, 0, 0.5, isMobileDevice and -250 or -160)
             mainContainer.Visible = true
             
+            local targetPos = isMobileDevice and UDim2.new(0.5, -170, 0.5, -250) or UDim2.new(0.02, 0, 0.5, -160)
             local targetSize = isMobileDevice and UDim2.new(0, 340, 0, 500) or UDim2.new(0, 400, 0, 320)
-            TweenService:Create(mainContainer, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            
+            TweenService:Create(mainContainer, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                Position = targetPos,
                 Size = targetSize
             }):Play()
         else
-            TweenService:Create(mainContainer, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
-                Size = UDim2.new(0, 0, 0, 0)
+            -- Slide tab back and hide menu
+            TweenService:Create(toggleTab, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+                Position = UDim2.new(1, -130, 1, -55),
+                BackgroundColor3 = Settings.UIAccentColor
             }):Play()
             
-            task.wait(0.2)
+            toggleLabel.Text = "ZENITH"
+            
+            -- Hide main container with slide to right
+            local hidePos = UDim2.new(1.5, 0, 0.5, isMobileDevice and -250 or -160)
+            
+            TweenService:Create(mainContainer, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+                Position = hidePos
+            }):Play()
+            
+            task.wait(0.3)
             mainContainer.Visible = false
         end
     end)
     
-    -- Mobile touch support (in case MouseButton1Click doesn't fire)
+    -- Mobile touch support
     if isMobileDevice then
-        toggleButton.TouchTap:Connect(function()
-            Settings.UIMinimized = not Settings.UIMinimized
-            mainContainer.Visible = not Settings.UIMinimized
+        toggleTab.TouchTap:Connect(function()
+            isExpanded = not isExpanded
+            Settings.UIMinimized = not isExpanded
             
-            local targetSize = Settings.UIMinimized and UDim2.new(0, 60, 0, 60) or UDim2.new(0, 50, 0, 50)
-            TweenService:Create(toggleButton, TweenInfo.new(0.3, Enum.EasingStyle.Back), {
-                Size = targetSize,
-                Rotation = Settings.UIMinimized and 0 or 90
-            }):Play()
-            
-            if not Settings.UIMinimized then
-                mainContainer.Size = UDim2.new(0, 0, 0, 0)
+            if isExpanded then
+                TweenService:Create(toggleTab, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                    Position = UDim2.new(1, -140, 1, -55),
+                    BackgroundColor3 = Color3.fromRGB(80, 200, 80)
+                }):Play()
+                
+                toggleLabel.Text = "OPEN"
+                
+                mainContainer.Position = UDim2.new(1.5, 0, 0.5, -250)
                 mainContainer.Visible = true
                 
-                TweenService:Create(mainContainer, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                TweenService:Create(mainContainer, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                    Position = UDim2.new(0.5, -170, 0.5, -250),
                     Size = UDim2.new(0, 340, 0, 500)
                 }):Play()
             else
-                TweenService:Create(mainContainer, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
-                    Size = UDim2.new(0, 0, 0, 0)
+                TweenService:Create(toggleTab, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+                    Position = UDim2.new(1, -130, 1, -55),
+                    BackgroundColor3 = Settings.UIAccentColor
                 }):Play()
                 
-                task.wait(0.2)
+                toggleLabel.Text = "ZENITH"
+                
+                TweenService:Create(mainContainer, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+                    Position = UDim2.new(1.5, 0, 0.5, -250)
+                }):Play()
+                
+                task.wait(0.3)
                 mainContainer.Visible = false
             end
         end)
@@ -2215,14 +2281,25 @@ local function CreateUI()
     
     -- Minimize button handler
     minimizeBtn.MouseButton1Click:Connect(function()
+        isExpanded = false
         Settings.UIMinimized = true
-        mainContainer.Visible = false
         
-        -- Animate toggle button back
-        TweenService:Create(toggleButton, TweenInfo.new(0.3, Enum.EasingStyle.Back), {
-            Size = UDim2.new(0, 60, 0, 60),
-            Rotation = 0
+        -- Slide tab back
+        TweenService:Create(toggleTab, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Position = UDim2.new(1, -130, 1, -55),
+            BackgroundColor3 = Settings.UIAccentColor
         }):Play()
+        
+        toggleLabel.Text = "ZENITH"
+        
+        -- Hide main container
+        local hidePos = UDim2.new(1.5, 0, 0.5, isMobileDevice and -250 or -160)
+        TweenService:Create(mainContainer, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Position = hidePos
+        }):Play()
+        
+        task.wait(0.3)
+        mainContainer.Visible = false
     end)
     
     closeBtn.MouseButton1Click:Connect(function()
